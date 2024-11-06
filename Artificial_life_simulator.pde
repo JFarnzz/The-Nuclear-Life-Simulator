@@ -1,531 +1,644 @@
-// Import necessary libraries
 import controlP5.*;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.HashMap;
-import java.util.Map;
-import processing.core.PVector;
 import processing.sound.*;
+import java.util.ArrayList;
+import java.util.HashMap;
+import processing.core.PVector;
+import processing.event.MouseEvent;
 
 // Global variables
 ControlP5 cp5;
-PVector camPos = new PVector(0, 0);
-float zoomLevel = 1.0;
-boolean isLoading = false;
-float loadProgress = 0.0;
-boolean isWorldEmpty = false;
-int generationCount = 0;
-List<Creature> creatures = new ArrayList<>();
-List<Food> foods = new ArrayList<>();
-List<Obstacle> obstacles = new ArrayList<>();
-List<Virus> viruses = new ArrayList<>();
-Map<String, SavedCreature> savedCreatures = new HashMap<>();
-Creature selectedCreature = null;
-float dayCycle = 0;
-boolean isRaining = false;
-float rainTimer = 0;
-
-// Simulation speed variables
+SoundFile reflectionSound;
+ArrayList<Creature> creatures = new ArrayList<>();
+ArrayList<Predator> predators = new ArrayList<>();
+ArrayList<Food> foods = new ArrayList<>();
+ArrayList<MutationPool> mutationPools = new ArrayList<>();
+HashMap<String, SavedCreature> savedCreatures = new HashMap<>();
 float simulationSpeed = 1.0;
 boolean isPaused = false;
+int radiationLevel = 50;
+int maxPopulation = 100;
+int initialPopulation = 20;
 
-// Sound variables for ambience
-SoundFile ambientSound;
-float ambientVolume = 0.5;
+int worldWidth = 3000;
+int worldHeight = 3000;
+PVector cameraPos = new PVector(worldWidth / 2, worldHeight / 2);
+float zoomLevel = 1.0;
+float loadProgress = 0;
 
-// Application states
 final int STATE_MAIN_MENU = 0;
-final int STATE_SIMULATION = 1;
-final int STATE_ARCHIVE = 2;
-final int STATE_CONTROLS = 3;
+final int STATE_WORLD_PARAMS = 1;
+final int STATE_LOADING = 2;
+final int STATE_SIMULATION = 3;
+final int STATE_DESCRIPTION = 4;
 int currentState = STATE_MAIN_MENU;
 
-// Control Panel class for button management
-class ControlPanel {
-    HashMap<String, Button> buttons = new HashMap<>();
+ControlPanel mainMenuPanel, simulationPanel, setupPanel, descriptionPanel;
+Slider popSlider, foodSlider, radiationSlider;
 
-    void addButton(String label, int x, int y, int width, int height, CallbackListener callback) {
-        Button button = cp5.addButton(label).setPosition(x, y).setSize(width, height).onClick(callback);
-        buttons.put(label, button);
-    }
-
-    void show() {
-        for (Button button : buttons.values()) button.show();
-    }
-
-    void hide() {
-        for (Button button : buttons.values()) button.hide();
-    }
+// Display setup
+void settings() {
+    fullScreen(P2D);
 }
 
-ControlPanel mainMenuPanel = new ControlPanel();
-ControlPanel simulationPanel = new ControlPanel();
-
-// Environment class for day-night cycle and weather effects
-class Environment {
-    float cycleSpeed = 0.001;
-
-    void updateCycle() {
-        dayCycle += cycleSpeed * simulationSpeed;
-        if (dayCycle >= 1) dayCycle = 0;
-        if (rainTimer <= 0 && random(1) < 0.001 * simulationSpeed) {
-            isRaining = true;
-            rainTimer = random(2000, 5000);
-        } else if (isRaining) {
-            rainTimer--;
-            if (rainTimer <= 0) {
-                isRaining = false;
-            }
-        }
-    }
-
-    int getCurrentSkyColor() {
-        return lerpColor(color(50, 50, 100), color(100, 100, 250), abs(sin(dayCycle * PI)));
-    }
-}
-
-Environment environment = new Environment();
-
-// Gene class with mutation and crossbreeding functionality
-class Gene {
-    float size, speed, colorR, colorG, colorB;
-    float lifespan, metabolism, reproductionRate, mutationChance;
-    float visionRange, aggressiveness, resilience;
-
-    Gene(float size, float speed, float colorR, float colorG, float colorB, float lifespan,
-         float metabolism, float reproductionRate, float mutationChance, float visionRange,
-         float aggressiveness, float resilience) {
-        this.size = size;
-        this.speed = speed;
-        this.colorR = colorR;
-        this.colorG = colorG;
-        this.colorB = colorB;
-        this.lifespan = lifespan;
-        this.metabolism = metabolism;
-        this.reproductionRate = reproductionRate;
-        this.mutationChance = mutationChance;
-        this.visionRange = visionRange;
-        this.aggressiveness = aggressiveness;
-        this.resilience = resilience;
-    }
-
-    Gene mutate() {
-        return new Gene(
-            constrain(size + random(-0.05, 0.05), 1, 5),
-            constrain(speed + random(-0.05, 0.05), 0.5, 3),
-            constrain(colorR + random(-20, 20), 50, 255),
-            constrain(colorG + random(-20, 20), 50, 255),
-            constrain(colorB + random(-20, 20), 50, 255),
-            constrain(lifespan + random(-5, 5), 50, 200),
-            constrain(metabolism + random(-0.02, 0.02), 0.1, 1),
-            constrain(reproductionRate + random(-0.01, 0.01), 0.1, 1),
-            constrain(mutationChance + random(-0.01, 0.01), 0.05, 0.3),
-            constrain(visionRange + random(-5, 5), 20, 200),
-            constrain(aggressiveness + random(-0.1, 0.1), 0, 1),
-            constrain(resilience + random(-0.1, 0.1), 0, 1)
-        );
-    }
-}
-
-// Creature class for individual creatures in the simulation
-class Creature {
-    PVector pos, vel;
-    Gene genes;
-    NeuralNetwork brain;
-    float energy, age;
-    boolean isDead = false;
-    boolean isAggressive;
-    int creatureType;
-    color displayColor;
-
-    Creature(Gene genes) {
-        this.genes = (genes != null) ? genes : randomGenes();
-        this.brain = new NeuralNetwork();
-        pos = new PVector(random(width), random(height));
-        vel = PVector.random2D().mult(this.genes.speed);
-        energy = 200;
-        age = 0;
-        isAggressive = this.genes.aggressiveness > 0.5;
-        creatureType = (int) random(3);
-        displayColor = color(this.genes.colorR, this.genes.colorG, this.genes.colorB, 200);
-    }
-
-    Gene randomGenes() {
-        return new Gene(
-            random(1, 5), random(0.5, 3), random(50, 255), random(50, 255), random(50, 255),
-            random(50, 200), random(0.1, 1), random(0.1, 1), random(0.05, 0.3),
-            random(20, 100), random(0, 1), random(0.2, 1)
-        );
-    }
-
-    void update() {
-        if (isPaused || isDead || age > genes.lifespan || energy <= 0) {
-            isDead = true;
-            return;
-        }
-        
-        age += 1 * simulationSpeed;
-        energy -= genes.metabolism * 0.1 * simulationSpeed;
-        
-        if (isRaining) energy -= 0.05 * simulationSpeed;
-        
-        interactWithFood();
-        interactWithCreatures();
-        interactWithViruses();
-
-        float decision = brain.decideAction(1, -1);
-        vel.rotate(decision * 0.1);
-        pos.add(vel.mult(simulationSpeed));
-        pos.x = constrain(pos.x, 0, width);
-        pos.y = constrain(pos.y, 0, height);
-
-        if (!isWorldEmpty && random(1) < genes.reproductionRate && energy > 150) {
-            reproduce();
-        }
-    }
-
-    void interactWithFood() {
-        for (Food food : foods) {
-            if (dist(pos.x, pos.y, food.pos.x, food.pos.y) < genes.visionRange) {
-                energy += food.nutrition;
-                food.respawn();
-            }
-        }
-    }
-
-    void interactWithCreatures() {
-        for (Creature other : creatures) {
-            if (other != this && dist(pos.x, pos.y, other.pos.x, other.pos.y) < genes.visionRange) {
-                if (creatureType == 1 && other.creatureType == 0) {
-                    other.energy -= genes.aggressiveness * 10;
-                } else if (creatureType == 2 && random(1) > 0.5) {
-                    other.energy -= genes.aggressiveness * 5;
-                }
-            }
-        }
-    }
-
-    void interactWithViruses() {
-        for (Virus virus : viruses) {
-            if (virus.active && dist(pos.x, pos.y, virus.pos.x, virus.pos.y) < virus.infectionRange) {
-                virus.infect(this);
-            }
-        }
-    }
-
-    void reproduce() {
-        creatures.add(new Creature(genes.mutate()));
-        energy -= 100;
-    }
-
-    void display() {
-        if (this == selectedCreature) {
-            stroke(255, 255, 0);
-            strokeWeight(3);
-        } else {
-            noStroke();
-        }
-        
-        fill(displayColor);
-        ellipse(pos.x, pos.y, genes.size * 10, genes.size * 10);
-        
-        if (this == selectedCreature) {
-            fill(0, 255, 0);
-            rect(pos.x - genes.size * 5, pos.y - genes.size * 6, genes.size * 10 * (energy / 200), 3);
-        }
-        
-        strokeWeight(1);
-        noStroke();
-    }
-}
-
-// SavedCreature class for storing creatures in the archive
-class SavedCreature {
-    String name;
-    Gene genes;
-    NeuralNetwork brain;
-
-    SavedCreature(String name, Gene genes, NeuralNetwork brain) {
-        this.name = name;
-        this.genes = genes;
-        this.brain = brain;
-    }
-}
-
-// Virus class for infecting creatures
-class Virus {
-    PVector pos;
-    float infectionRange;
-    boolean active;
-
-    Virus() {
-        pos = new PVector(random(width), random(height));
-        infectionRange = random(20, 50);
-        active = true;
-    }
-
-    void infect(Creature target) {
-        if (dist(pos.x, pos.y, target.pos.x, target.pos.y) < infectionRange) {
-            target.genes = target.genes.mutate(); // Mutate genes upon infection
-            active = false;
-        }
-    }
-
-    void display() {
-        if (active) {
-            fill(150, 0, 255, 150);
-            ellipse(pos.x, pos.y, infectionRange, infectionRange);
-        }
-    }
-}
-
-// Obstacle class
-class Obstacle {
-    PVector pos;
-    float size;
-
-    Obstacle(float x, float y, float size) {
-        pos = new PVector(x, y);
-        this.size = size;
-    }
-
-    void display() {
-        fill(100, 100, 100);
-        ellipse(pos.x, pos.y, size * 2, size * 2);
-    }
-}
-
-// Food class
-class Food {
-    PVector pos;
-    float nutrition;
-
-    Food() {
-        respawn();
-    }
-
-    void respawn() {
-        pos = new PVector(random(width), random(height));
-        nutrition = random(10, 20);
-    }
-
-    void display() {
-        fill(100, 255, 100);
-        ellipse(pos.x, pos.y, 10, 10);
-    }
-}
-
-// NeuralNetwork class for decision-making
-class NeuralNetwork {
-    float responseToFood, responseToCreatures;
-
-    NeuralNetwork() {
-        responseToFood = random(-1, 1);
-        responseToCreatures = random(-1, 1);
-    }
-
-    float decideAction(float foodInput, float creatureInput) {
-        return map(responseToFood * foodInput + responseToCreatures * creatureInput, -1, 1, -0.5, 0.5);
-    }
-}
-
-// Setup and Main Functions
 void setup() {
-    size(1600, 900);
     cp5 = new ControlP5(this);
+    frameRate(60);
+    initializeSound();
     setupMainMenu();
+    setupWorldParameterScreen();
     setupSimulationControls();
-    ambientSound = new SoundFile(this, "Reflection of Times.wav");
-    if (ambientSound != null) {
-        ambientSound.loop();
-        ambientSound.amp(ambientVolume);
+    setupDescriptionScreen();
+    initializeFood(100);
+    initializeMutationPools(3);
+}
+
+void initializeSound() {
+    reflectionSound = new SoundFile(this, "data/Reflection of Times.wav");
+    if (reflectionSound != null) {
+        reflectionSound.loop();
+    } else {
+        println("Error: 'Reflection of Times.wav' not found in the 'data' folder.");
     }
-
-    for (int i = 0; i < 10; i++) obstacles.add(new Obstacle(random(width), random(height), random(20, 50)));
-    for (int i = 0; i < 100; i++) foods.add(new Food());
-    for (int i = 0; i < 3; i++) viruses.add(new Virus());
 }
 
+// UI Elements: Main menu, world parameters, simulation controls, and description screen
 void setupMainMenu() {
-    mainMenuPanel.addButton("Start Simulation", width / 2 - 75, height / 2, 150, 40, event -> {
-        isWorldEmpty = false;
-        initializeSimulation();
-        currentState = STATE_SIMULATION;
+    mainMenuPanel = new ControlPanel();
+    mainMenuPanel.addButton("Start Simulation", width / 2 - 100, height / 2, 200, 40, e -> {
+        currentState = STATE_WORLD_PARAMS;
         mainMenuPanel.hide();
-        simulationPanel.show();
+        setupPanel.show();
+        showWorldParameterSliders();
     });
-    mainMenuPanel.addButton("Creature Archive", width / 2 - 75, height / 2 + 50, 150, 40, event -> {
-        currentState = STATE_ARCHIVE;
+    mainMenuPanel.addButton("Description", width / 2 - 100, height / 2 + 60, 200, 40, e -> {
+        currentState = STATE_DESCRIPTION;
         mainMenuPanel.hide();
+        descriptionPanel.show();
     });
-    mainMenuPanel.addButton("Controls", width / 2 - 75, height / 2 + 100, 150, 40, event -> {
-        currentState = STATE_CONTROLS;
-        mainMenuPanel.hide();
-    });
-    mainMenuPanel.addButton("Exit", width / 2 - 75, height / 2 + 150, 150, 40, event -> exit());
+    mainMenuPanel.addButton("Exit", width / 2 - 100, height / 2 + 120, 200, 40, e -> exit());
+    mainMenuPanel.show();
 }
 
-// Setting up simulation-specific controls
+void setupWorldParameterScreen() {
+    setupPanel = new ControlPanel();
+    setupPanel.addButton("Back", width / 2 - 50, height - 60, 100, 30, e -> {
+        setupPanel.hide();
+        mainMenuPanel.show();
+        currentState = STATE_MAIN_MENU;
+        hideWorldParameterSliders();
+    });
+    setupPanel.addButton("Confirm", width / 2 - 50, height - 100, 100, 30, e -> {
+        currentState = STATE_LOADING;
+        setupPanel.hide();
+        startLoading();
+        hideWorldParameterSliders();
+    });
+    setupPanel.hide();
+
+    popSlider = cp5.addSlider("Initial Population")
+        .setPosition(width / 2 - 100, height / 2 - 80)
+        .setSize(200, 20)
+        .setRange(10, maxPopulation)
+        .setValue(initialPopulation)
+        .onRelease(e -> initialPopulation = (int) e.getController().getValue());
+
+    foodSlider = cp5.addSlider("Initial Food Level")
+        .setPosition(width / 2 - 100, height / 2 - 50)
+        .setSize(200, 20)
+        .setRange(50, 500)
+        .setValue(100)
+        .onRelease(e -> initializeFood((int) e.getController().getValue()));
+
+    radiationSlider = cp5.addSlider("Radiation Level")
+        .setPosition(width / 2 - 100, height / 2 - 20)
+        .setSize(200, 20)
+        .setRange(0, 100)
+        .setValue(radiationLevel)
+        .onRelease(e -> radiationLevel = (int) e.getController().getValue());
+
+    hideWorldParameterSliders();
+}
+
+void showWorldParameterSliders() {
+    popSlider.show();
+    foodSlider.show();
+    radiationSlider.show();
+}
+
+void hideWorldParameterSliders() {
+    popSlider.hide();
+    foodSlider.hide();
+    radiationSlider.hide();
+}
+
 void setupSimulationControls() {
-    simulationPanel.addButton("Pause", 20, height - 50, 80, 30, event -> isPaused = !isPaused);
-    simulationPanel.addButton("Speed Up", 110, height - 50, 80, 30, event -> simulationSpeed = min(simulationSpeed + 0.5, 3.0));
-    simulationPanel.addButton("Slow Down", 200, height - 50, 80, 30, event -> simulationSpeed = max(simulationSpeed - 0.5, 0.5));
-    simulationPanel.addButton("Main Menu", 290, height - 50, 100, 30, event -> {
+    simulationPanel = new ControlPanel();
+    simulationPanel.addButton("Pause", 20, height - 50, 80, 30, e -> isPaused = !isPaused);
+    simulationPanel.addButton("Speed +", 110, height - 50, 80, 30, e -> simulationSpeed = constrain(simulationSpeed + 0.2, 0.5, 2.0));
+    simulationPanel.addButton("Speed -", 200, height - 50, 80, 30, e -> simulationSpeed = constrain(simulationSpeed - 0.2, 0.5, 2.0));
+    simulationPanel.addButton("Reset", 290, height - 50, 80, 30, e -> initializeSimulation());
+    simulationPanel.addButton("Main Menu", 380, height - 50, 100, 30, e -> {
         currentState = STATE_MAIN_MENU;
         mainMenuPanel.show();
+        setupPanel.hide();
         simulationPanel.hide();
     });
+    simulationPanel.hide();
 }
 
-void initializeSimulation() {
-    generationCount = 0;
-    creatures.clear();
-    foods.clear();
-    obstacles.clear();
+void setupDescriptionScreen() {
+    descriptionPanel = new ControlPanel();
+    descriptionPanel.addButton("Back", width / 2 - 50, height - 60, 100, 30, e -> {
+        descriptionPanel.hide();
+        mainMenuPanel.show();
+        currentState = STATE_MAIN_MENU;
+    });
+    descriptionPanel.hide();
+}
 
-    for (int i = 0; i < 50; i++) creatures.add(new Creature(null));
-    for (int i = 0; i < 100; i++) foods.add(new Food());
-    for (int i = 0; i < 10; i++) obstacles.add(new Obstacle(random(width), random(height), random(20, 50)));
+// Loading process
+void startLoading() {
+    loadProgress = 0;
+    thread("loadingProcess");
+}
+
+void loadingProcess() {
+    for (int i = 0; i <= 100; i++) {
+        delay(30);
+        loadProgress = i;
+        if (i == 100) {
+            currentState = STATE_SIMULATION;
+            initializeSimulation();
+            simulationPanel.show();
+        }
+    }
+}
+
+// Simulation setup
+void initializeSimulation() {
+    creatures.clear();
+    predators.clear();
+    for (int i = 0; i < initialPopulation; i++) {
+        creatures.add(new Creature());
+    }
+    for (int i = 0; i < initialPopulation / 10; i++) {
+        predators.add(new Predator());
+    }
+    isPaused = false;
+}
+
+void initializeFood(int amount) {
+    foods.clear();
+    for (int i = 0; i < amount; i++) {
+        foods.add(new Food(random(worldWidth), random(worldHeight)));
+    }
+}
+
+void initializeMutationPools(int numPools) {
+    mutationPools.clear();
+    for (int i = 0; i < numPools; i++) {
+        mutationPools.add(new MutationPool(random(worldWidth), random(worldHeight), 100));
+    }
+}
+
+// Replenish food
+void replenishFood() {
+    if (foods.size() < 100) {
+        for (int i = 0; i < 5; i++) {
+            foods.add(new Food(random(worldWidth), random(worldHeight)));
+        }
+    }
+}
+
+// Draw loop
+void draw() {
+    switch (currentState) {
+        case STATE_MAIN_MENU:
+            drawMainMenu();
+            break;
+        case STATE_WORLD_PARAMS:
+            drawWorldParameterScreen();
+            break;
+        case STATE_LOADING:
+            drawLoadingScreen();
+            break;
+        case STATE_SIMULATION:
+            runSimulation();
+            break;
+        case STATE_DESCRIPTION:
+            drawDescriptionScreen();
+            break;
+    }
+}
+
+// UI screens
+void drawMainMenu() {
+    background(100, 120, 180);
+    textSize(36);
+    fill(255);
+    textAlign(CENTER);
+    text("The Nuclear Life Simulator", width / 2, height / 4);
+
+    textSize(18);
+    fill(220);
+    text("Developed by Christopher J Boardman", width / 2, height / 4 + 50);
+    text("Instagram: @Wigan96", width / 2, height / 4 + 80);
+
+    mainMenuPanel.show();
+}
+
+void drawWorldParameterScreen() {
+    background(80, 100, 180);
+    textSize(32);
+    fill(255);
+    textAlign(CENTER);
+    text("Select World Parameters", width / 2, height / 4);
+    setupPanel.show();
+}
+
+void drawLoadingScreen() {
+    background(50);
+    textSize(32);
+    fill(255);
+    textAlign(CENTER);
+    text("Loading Simulation...", width / 2, height / 2 - 50);
+
+    fill(100);
+    rect(width / 4, height / 2, width / 2, 20);
+    fill(0, 150, 0);
+    rect(width / 4, height / 2, (width / 2) * (loadProgress / 100), 20);
+
+    fill(255);
+    textSize(16);
+    text(int(loadProgress) + "%", width / 2, height / 2 + 50);
 }
 
 void runSimulation() {
-    applyCameraTransform();
+    background(10, 30, 60);
 
-    for (Obstacle obstacle : obstacles) obstacle.display();
-    updateAndDisplayCreatures();
-    updateAndDisplayFood();
-    for (Virus virus : viruses) virus.display();
-
-    resetCameraTransform();
-
-    if (ambientSound != null && !ambientSound.isPlaying()) {
-        ambientSound.loop();
-    }
-}
-
-void updateAndDisplayCreatures() {
-    for (int i = creatures.size() - 1; i >= 0; i--) {
-        Creature creature = creatures.get(i);
-        creature.update();
-        if (creature.isDead) {
-            creatures.remove(i);
-        } else {
-            creature.display();
-        }
-    }
-}
-
-void updateAndDisplayFood() {
-    for (Food food : foods) food.display();
-}
-
-// Camera functions for zoom and panning
-void applyCameraTransform() {
-    translate(width / 2, height / 2);
-    scale(zoomLevel);
-    translate(-camPos.x, -camPos.y);
-}
-
-void resetCameraTransform() {
-    resetMatrix();
-}
-
-void mouseWheel(MouseEvent event) {
-    float e = event.getCount();
-    zoomLevel = constrain(zoomLevel - e * 0.05, 0.5, 2.5);
-}
-
-void keyPressed() {
-    float panSpeed = 10 / zoomLevel;
-    if (keyCode == UP) camPos.y -= panSpeed;
-    if (keyCode == DOWN) camPos.y += panSpeed;
-    if (keyCode == LEFT) camPos.x -= panSpeed;
-    if (keyCode == RIGHT) camPos.x += panSpeed;
-
-    if (key == 'M' || key == 'm') {
-        currentState = STATE_MAIN_MENU;
-        mainMenuPanel.show();
-        simulationPanel.hide();
-    } else if (key == 'R' || key == 'r') {
-        initializeSimulation();
-    } else if (key == 'S' || key == 's' && selectedCreature != null) {
-        saveToArchive(selectedCreature);
-    } else if (key == 'L' || key == 'l') {
-        loadRandomCreatureFromArchive();
-    }
-}
-
-void displayHUD() {
-    fill(255);
-    textSize(16);
-    text("Generation: " + generationCount, 10, 20);
-    text("Population: " + creatures.size(), 10, 40);
-    text("Food Count: " + foods.size(), 10, 60);
-    text("Speed: " + nf(simulationSpeed, 1, 1) + "x", 10, 80);
-    if (isRaining) text("Weather: Rain", 10, 100);
-}
-
-void displayCreatureInfo() {
     fill(255);
     textSize(14);
     textAlign(LEFT);
-    text("Size: " + nf(selectedCreature.genes.size, 1, 2), width - 150, 20);
-    text("Speed: " + nf(selectedCreature.genes.speed, 1, 2), width - 150, 40);
-    text("Color: " + selectedCreature.genes.colorR + ", " + selectedCreature.genes.colorG + ", " + selectedCreature.genes.colorB, width - 150, 60);
-    text("Lifespan: " + nf(selectedCreature.genes.lifespan, 1, 2), width - 150, 80);
-    text("Energy: " + nf(selectedCreature.energy, 1, 2), width - 150, 100);
-    text("Type: " + selectedCreature.creatureType, width - 150, 120);
+    text("FPS: " + int(frameRate), 10, 20);
+    text("Simulation Speed: " + nf(simulationSpeed, 1, 2), 10, 40);
+    text("Creature Count: " + creatures.size(), 10, 60);
+    text("Predator Count: " + predators.size(), 10, 80);
+    text("Food Count: " + foods.size(), 10, 100);
+    text("Mutation Pools: " + mutationPools.size(), 10, 120);
+
+    replenishFood();
+
+    for (Food food : foods) food.display();
+    for (MutationPool pool : mutationPools) pool.display();
+
+    for (int i = creatures.size() - 1; i >= 0; i--) {
+        Creature creature = creatures.get(i);
+        creature.update();
+
+        for (MutationPool pool : mutationPools) {
+            if (pool.contains(creature) && random(100) < 10) {
+                creature.mutate();
+            }
+        }
+
+        if (!creature.isDead) creature.display();
+        else creatures.remove(i);
+    }
+
+    for (Predator predator : predators) predator.updateAndHunt();
+}
+
+void drawDescriptionScreen() {
+    background(60, 80, 150);
+    textSize(32);
+    fill(255);
+    textAlign(CENTER);
+    text("The Nuclear Life Simulator Description", width / 2, height / 4);
+
+    textSize(18);
+    fill(220);
+    textAlign(LEFT);
+    text("This simulation explores artificial life in a dynamic environment.", width / 4, height / 2 - 40);
+    text("Creatures evolve, reproduce, and adapt based on their environment.", width / 4, height / 2);
+    text("You can adjust parameters such as initial population, food levels,", width / 4, height / 2 + 40);
+    text("and radiation to see how these factors influence evolution.", width / 4, height / 2 + 80);
+
+    descriptionPanel.show();
+}
+
+// ControlPanel class for managing UI elements like buttons
+class ControlPanel {
+    HashMap<String, Button> buttons = new HashMap<>();
+
+    void addButton(String label, int x, int y, int w, int h, CallbackListener callback) {
+        Button button = cp5.addButton(label).setPosition(x, y).setSize(w, h).onClick(callback);
+        buttons.put(label, button);
+    }
+
+    void show() { for (Button button : buttons.values()) button.show(); }
+    void hide() { for (Button button : buttons.values()) button.hide(); }
+}
+
+// SavedCreature class to store attributes for saving and loading creatures
+class SavedCreature {
+    PVector position;
+    float energy;
+    int age;
+
+    SavedCreature(Creature creature) {
+        this.position = creature.position.copy();
+        this.energy = creature.energy;
+        this.age = creature.age;
+    }
+}
+
+// MutationPool represents zones with a higher mutation chance
+class MutationPool {
+    PVector position;
+    float radius;
+
+    MutationPool(float x, float y, float r) {
+        position = new PVector(x, y);
+        radius = r;
+    }
+
+    boolean contains(Creature creature) {
+        return PVector.dist(position, creature.position) < radius;
+    }
+
+    void display() {
+        float displayX = (position.x - cameraPos.x) * zoomLevel + width / 2;
+        float displayY = (position.y - cameraPos.y) * zoomLevel + height / 2;
+        noFill();
+        stroke(255, 200, 50, 150);
+        ellipse(displayX, displayY, radius * 2 * zoomLevel, radius * 2 * zoomLevel);
+    }
+}
+
+// Creature class defines individual creatures with a neural network for behavior
+class Creature {
+    PVector position, velocity;
+    float energy;
+    int age = 0;
+    boolean isDead = false;
+    NeuralNetwork brain;
+    float sizeFactor;
+    int reproductionThreshold = 5;
+    color creatureColor;
+    float temperatureTolerance;
+    float foodPreference;
+    float agility;
+    float visionRange;
+    int foodEaten = 0;
+
+    Creature() {
+        position = new PVector(random(worldWidth), random(worldHeight));
+        velocity = PVector.random2D().mult(random(1, 3));
+        energy = 100 + random(50, 100);
+        brain = new NeuralNetwork(4, 5);
+        sizeFactor = random(1.0, 2.0);
+        creatureColor = color(random(50, 255), random(50, 150), random(50, 150));
+        temperatureTolerance = random(15, 30);
+        foodPreference = random(0, 1);
+        agility = random(0.5, 1.5);
+        visionRange = random(50, 150);
+    }
+
+    void update() {
+        if (isPaused || isDead || energy <= 0) {
+            isDead = true;
+            return;
+        }
+
+        float foodDistance = closestFoodDistance();
+        float[] inputs = {foodDistance, energy / 100, temperatureTolerance, agility};
+        float moveSpeed = brain.process(inputs) * agility * 3.0;
+
+        energy -= 0.1 * simulationSpeed;
+        position.add(velocity.copy().mult(moveSpeed * simulationSpeed));
+        age++;
+
+        if (position.x < 0 || position.x > worldWidth) velocity.x *= -1;
+        if (position.y < 0 || position.y > worldHeight) velocity.y *= -1;
+
+        if (energy < 120) seekFood();
+        if (foodEaten >= reproductionThreshold) reproduce();
+        if (age > 300 && random(1) < 0.002) mutate();
+    }
+
+    float closestFoodDistance() {
+        float closestDist = visionRange;
+        for (Food food : foods) {
+            float dist = PVector.dist(position, food.position);
+            if (dist < closestDist) closestDist = dist;
+        }
+        return closestDist;
+    }
+
+    void seekFood() {
+        Food closestFood = null;
+        float closestDist = visionRange;
+
+        for (Food food : foods) {
+            float dist = PVector.dist(position, food.position);
+            if (dist < closestDist) {
+                closestDist = dist;
+                closestFood = food;
+            }
+        }
+
+        if (closestFood != null && closestDist < 20) {
+            eat(closestFood);
+        } else if (closestFood != null) {
+            PVector direction = PVector.sub(closestFood.position, position).normalize();
+            velocity = direction.mult(1.5 * agility);
+        }
+    }
+
+    void eat(Food food) {
+        energy += food.energy;
+        foods.remove(food);
+        foodEaten++;
+    }
+
+    void reproduce() {
+        if (creatures.size() < maxPopulation) {
+            Creature offspring = new Creature();
+            offspring.brain = brain.copy();
+            if (random(100) < radiationLevel) offspring.brain.mutate();
+            offspring.sizeFactor = sizeFactor * random(0.95, 1.05);
+            offspring.creatureColor = color(
+                red(creatureColor) * random(0.95, 1.05),
+                green(creatureColor) * random(0.95, 1.05),
+                blue(creatureColor) * random(0.95, 1.05)
+            );
+            offspring.temperatureTolerance = temperatureTolerance + random(-1, 1);
+            offspring.foodPreference = foodPreference + random(-0.1, 0.1);
+            offspring.agility = agility * random(0.95, 1.05);
+            offspring.visionRange = visionRange * random(0.95, 1.05);
+            creatures.add(offspring);
+            energy /= 2;
+            foodEaten = 0;
+        }
+    }
+
+    void mutate() {
+        velocity.mult(1 + random(-0.1, 0.1));
+        energy += random(-10, 10);
+        brain.mutate();
+        sizeFactor *= random(0.95, 1.05);
+        temperatureTolerance += random(-1, 1);
+        foodPreference += random(-0.1, 0.1);
+        agility *= random(0.95, 1.05);
+        visionRange *= random(0.95, 1.05);
+    }
+
+    void display() {
+        float displayX = (position.x - cameraPos.x) * zoomLevel + width / 2;
+        float displayY = (position.y - cameraPos.y) * zoomLevel + height / 2;
+
+        fill(creatureColor);
+        noStroke();
+        ellipse(displayX, displayY, 10 * sizeFactor * zoomLevel, 10 * sizeFactor * zoomLevel);
+    }
+}
+
+// Predator class with hunting behavior
+class Predator extends Creature {
+    float strength;
+
+    Predator() {
+        super();
+        strength = random(1.5, 3.0);
+        creatureColor = color(200, 0, 0);
+    }
+
+    void updateAndHunt() {
+        super.update();
+
+        if (!isDead && !isPaused) {
+            huntCreatures();
+        }
+    }
+
+    void huntCreatures() {
+        Creature closestPrey = null;
+        float closestDist = visionRange;
+
+        for (Creature prey : creatures) {
+            float dist = PVector.dist(position, prey.position);
+            if (dist < closestDist) {
+                closestDist = dist;
+                closestPrey = prey;
+            }
+        }
+
+        if (closestPrey != null && closestDist < 20) {
+            eat(closestPrey);
+        } else if (closestPrey != null) {
+            PVector direction = PVector.sub(closestPrey.position, position).normalize();
+            velocity = direction.mult(1.5 * agility);
+        }
+    }
+
+    void eat(Creature prey) {
+        energy += prey.energy;
+        creatures.remove(prey);
+        if (energy > reproductionThreshold * 2) reproduce();
+    }
+}
+
+// Food class for consumable resources
+class Food {
+    PVector position;
+    float energy;
+
+    Food(float x, float y) {
+        position = new PVector(x, y);
+        energy = random(20, 50);
+    }
+
+    void display() {
+        float displayX = (position.x - cameraPos.x) * zoomLevel + width / 2;
+        float displayY = (position.y - cameraPos.y) * zoomLevel + height / 2;
+        fill(0, 180, 0);
+        noStroke();
+        ellipse(displayX, displayY, 8 * zoomLevel, 8 * zoomLevel);
+    }
+}
+
+// NeuralNetwork class for decision-making in creatures
+class NeuralNetwork {
+    int numInputs, numHidden;
+    float[] inputWeights, hiddenWeights;
+
+    NeuralNetwork(int numInputs, int numHidden) {
+        this.numInputs = numInputs;
+        this.numHidden = numHidden;
+        inputWeights = new float[numInputs * numHidden];
+        hiddenWeights = new float[numHidden];
+        initializeWeights();
+    }
+
+    void initializeWeights() {
+        for (int i = 0; i < inputWeights.length; i++) inputWeights[i] = random(-1, 1);
+        for (int i = 0; i < hiddenWeights.length; i++) hiddenWeights[i] = random(-1, 1);
+    }
+
+    float process(float[] inputs) {
+        float[] hiddenLayer = new float[numHidden];
+        for (int i = 0; i < numHidden; i++) {
+            float sum = 0;
+            for (int j = 0; j < numInputs; j++) {
+                sum += inputs[j] * inputWeights[j + i * numInputs];
+            }
+            hiddenLayer[i] = tanh(sum);
+        }
+
+        float output = 0;
+        for (int i = 0; i < numHidden; i++) {
+            output += hiddenLayer[i] * hiddenWeights[i];
+        }
+        return constrain(output, 0, 1);
+    }
+
+    NeuralNetwork copy() {
+        NeuralNetwork clone = new NeuralNetwork(numInputs, numHidden);
+        arrayCopy(inputWeights, clone.inputWeights);
+        arrayCopy(hiddenWeights, clone.hiddenWeights);
+        return clone;
+    }
+
+    void mutate() {
+        int index = (int) random(inputWeights.length);
+        inputWeights[index] += random(-0.1, 0.1);
+
+        index = (int) random(hiddenWeights.length);
+        hiddenWeights[index] += random(-0.1, 0.1);
+    }
+}
+
+float tanh(float x) {
+    float exp2x = exp(2 * x);
+    return (exp2x - 1) / (exp2x + 1);
+}
+
+// Mouse controls for zooming and panning
+PVector lastMousePos;
+
+void mouseWheel(MouseEvent event) {
+    float e = event.getCount();
+    zoomLevel = constrain(zoomLevel - e * 0.1, 0.5, 3.0);
 }
 
 void mousePressed() {
-    PVector mousePos = new PVector(mouseX, mouseY);
-    selectedCreature = null;
-    for (Creature creature : creatures) {
-        if (dist(mousePos.x, mousePos.y, creature.pos.x, creature.pos.y) < creature.genes.size * 10) {
-            selectedCreature = creature;
-            break;
-        }
-    }
+    lastMousePos = new PVector(mouseX, mouseY);
 }
 
-void saveToArchive(Creature creature) {
-    String name = "Creature_" + generationCount + "_" + millis();
-    savedCreatures.put(name, new SavedCreature(name, creature.genes, creature.brain));
-    println("Saved " + name + " to archive.");
-}
-
-void loadRandomCreatureFromArchive() {
-    if (!savedCreatures.isEmpty()) {
-        Gene randomGene = savedCreatures.values().iterator().next().genes;
-        creatures.add(new Creature(randomGene));
-    }
-}
-
-void draw() {
-    background(environment.getCurrentSkyColor());
-    environment.updateCycle();
-
-    if (currentState == STATE_SIMULATION && !isPaused) {
-        runSimulation();
-    } else if (isPaused) {
-        fill(255, 100, 100);
-        textAlign(CENTER);
-        text("Simulation Paused", width / 2, height / 2);
-    }
-
-    displayHUD();
-    if (selectedCreature != null) displayCreatureInfo();
-}
-
-void displayMainMenu() {
-    background(20, 40, 70);
-    textAlign(CENTER);
-    textSize(32);
-    fill(255);
-    text("Evolution Simulator", width / 2, height / 2 - 150);
-    textSize(20);
-    fill(180);
-    text("Developer: Christopher J Boardman", width / 2, height / 2 - 100);
-    text("Instagram: @Wigan96", width / 2, height / 2 - 70);
-    mainMenuPanel.show();
+void mouseDragged() {
+    float dx = mouseX - lastMousePos.x;
+    float dy = mouseY - lastMousePos.y;
+    cameraPos.x -= dx / zoomLevel;
+    cameraPos.y -= dy / zoomLevel;
+    lastMousePos.set(mouseX, mouseY);
 }
