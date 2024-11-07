@@ -53,7 +53,7 @@ void setup() {
 }
 
 void initializeSound() {
-    reflectionSound = new SoundFile(this, "data/Reflection of Times.wav");
+    reflectionSound = new SoundFile(this, "Reflection of Times.wav");
     if (reflectionSound != null) {
         reflectionSound.loop();
     } else {
